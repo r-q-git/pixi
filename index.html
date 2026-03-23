@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <title>Advanced Pixi Editor</title>
+    <script src="https://pixijs.download/v7.4.0/pixi.min.js"></script>
+    <style>
+      body {
+        margin: 0;
+        background: #2b2b2b;
+        color: white;
+        font-family: sans-serif;
+        text-align: center;
+      }
+      #controls {
+        padding: 10px;
+      }
+      canvas {
+        border: 1px solid #444;
+        margin-top: 10px;
+      }
+      #layersPanel {
+        position: fixed;
+        right: 0;
+        top: 0;
+        width: 200px;
+        height: 100%;
+        background: #1e1e1e;
+        overflow: auto;
+        padding: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="controls">
+      <input type="file" id="upload" />
+      <button id="lassoMode">Lasso</button>
+      <button id="brushMode">Brush</button>
+      <label style="margin-left: 15px">Size: </label>
+      <input type="range" id="brushSize" min="1" max="100" value="30" />
+      <span id="sizeValue">30</span>
+      <button id="undo">Undo</button>
+      <button id="redo">Redo</button>
+      <button id="save">Save</button>
+    </div>
+
+    <div id="layersPanel">
+      <h3>Layers</h3>
+      <div id="layersList"></div>
+    </div>
+
+    <script>
+      const app = new PIXI.Application({
+        backgroundAlpha: 0, // Makes the canvas itself transparent
+        antialias: true,
+        resizeTo: window, // Optional: keeps it responsive
+      });
+      document.body.appendChild(app.view);
+
+      // ================= STATE =================
+      let drawingTexture, drawingSprite;
+      let mode = "lasso";
+      let brushSize = 30;
+      let isDrawing = false; // <--- ADDED THIS
+
+      let lassoPoints = [];
+      let draggingPoint = -1;
+
+      let layers = [];
+      let history = [];
+      let redoStack = [];
+
+      // UI Toggles & Slider
+      document.getElementById("lassoMode").onclick = () => (mode = "lasso");
+      document.getElementById("brushMode").onclick = () => (mode = "brush");
+
+      const sizeSlider = document.getElementById("brushSize");
+      const sizeLabel = document.getElementById("sizeValue");
+
+      sizeSlider.oninput = (e) => {
+        brushSize = parseInt(e.target.value);
+        sizeLabel.innerText = brushSize;
+      };
+
+      // ================= BG =================
+      const bg = new PIXI.Graphics();
+      app.stage.addChild(bg);
+
+      function drawChecker(w, h) {
+        bg.clear();
+      }
+
+      // ================= LASSO GRAPHICS =================
+      const lassoGraphics = new PIXI.Graphics();
+      app.stage.addChild(lassoGraphics);
+
+      function drawLasso(mousePos = null) {
+        lassoGraphics.clear();
+        if (lassoPoints.length === 0) return;
+
+        lassoGraphics.lineStyle(2, 0x00ff00);
+        lassoGraphics.moveTo(lassoPoints[0].x, lassoPoints[0].y);
+
+        for (let i = 1; i < lassoPoints.length; i++) {
+          lassoGraphics.lineTo(lassoPoints[i].x, lassoPoints[i].y);
+        }
+
+        // Draw line to current mouse position if still picking
+        if (mousePos && mode === "lasso") {
+          lassoGraphics.lineTo(mousePos.x, mousePos.y);
+        }
+
+        // Draw interactive nodes
+        lassoPoints.forEach((p, i) => {
+          lassoGraphics.beginFill(i === 0 ? 0xff0000 : 0xffff00);
+          lassoGraphics.drawCircle(p.x, p.y, 6);
+          lassoGraphics.endFill();
+        });
+      }
+
+      // ================= UPLOAD =================
+      document.getElementById("upload").onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const img = new Image();
+        img.onload = () => {
+          app.renderer.resize(img.width, img.height);
+          drawChecker(img.width, img.height);
+
+          drawingTexture = PIXI.RenderTexture.create({
+            width: img.width,
+            height: img.height,
+          });
+          const tempSprite = PIXI.Sprite.from(img);
+          app.renderer.render(tempSprite, { renderTexture: drawingTexture });
+
+          if (drawingSprite) app.stage.removeChild(drawingSprite);
+          drawingSprite = new PIXI.Sprite(drawingTexture);
+          app.stage.addChild(drawingSprite);
+          app.stage.addChild(lassoGraphics); // Keep lasso on top
+
+          enableEvents();
+        };
+        img.src = URL.createObjectURL(file);
+      };
+
+      // ================= EVENTS =================
+      function enableEvents() {
+        app.stage.eventMode = "static";
+        app.stage.hitArea = app.screen;
+
+        app.stage.on("pointerdown", (e) => {
+          const pos = e.global.clone();
+          isDrawing = true; // Start tracking for brush
+
+          if (mode === "lasso") {
+            if (lassoPoints.length > 2) {
+              const distToStart = Math.hypot(
+                pos.x - lassoPoints[0].x,
+                pos.y - lassoPoints[0].y,
+              );
+              if (distToStart < 15) {
+                applyLasso();
+                return;
+              }
+            }
+            draggingPoint = lassoPoints.findIndex(
+              (p) => Math.hypot(p.x - pos.x, p.y - pos.y) < 15,
+            );
+            if (draggingPoint !== -1) return;
+
+            lassoPoints.push(pos);
+            drawLasso();
+          }
+        });
+
+        app.stage.on("pointermove", (e) => {
+          const pos = e.global;
+
+          if (mode === "lasso") {
+            if (draggingPoint !== -1) {
+              lassoPoints[draggingPoint].x = pos.x;
+              lassoPoints[draggingPoint].y = pos.y;
+            }
+            drawLasso(pos);
+          }
+
+          // FIXED BRUSH LOGIC
+          if (isDrawing && mode === "brush") {
+            const g = new PIXI.Graphics();
+            g.beginFill(0xffffff);
+            g.drawCircle(pos.x, pos.y, brushSize);
+            g.endFill();
+
+            g.blendMode = PIXI.BLEND_MODES.DST_OUT;
+
+            app.renderer.render(g, {
+              renderTexture: drawingTexture,
+              clear: false,
+            });
+          }
+        });
+
+        app.stage.on("pointerup", () => {
+          isDrawing = false; // Stop brush
+          draggingPoint = -1;
+        });
+
+        app.stage.on("pointerupoutside", () => {
+          isDrawing = false;
+        });
+      }
+      // ================= APPLY LASSO (CUT TO LAYER) =================
+      function applyLasso() {
+        if (lassoPoints.length < 3) return;
+
+        const mask = new PIXI.Graphics();
+        mask.beginFill(0xffffff);
+        mask.moveTo(lassoPoints[0].x, lassoPoints[0].y);
+        lassoPoints.forEach((p) => mask.lineTo(p.x, p.y));
+        mask.closePath();
+        mask.endFill();
+
+        const tex = PIXI.RenderTexture.create({
+          width: app.screen.width,
+          height: app.screen.height,
+        });
+        const container = new PIXI.Container();
+        const spriteCopy = new PIXI.Sprite(drawingTexture);
+
+        container.addChild(spriteCopy);
+        container.mask = mask;
+        container.addChild(mask);
+
+        app.renderer.render(container, { renderTexture: tex });
+
+        const newLayerSprite = new PIXI.Sprite(tex);
+        app.stage.addChild(newLayerSprite);
+
+        layers.push({ texture: tex, sprite: newLayerSprite });
+        lassoPoints = [];
+        lassoGraphics.clear();
+        updateLayers();
+        saveHistory();
+      }
+
+      // ================= HISTORY & UI =================
+      function saveHistory() {
+        // We store shallow copies of the layers array
+        history.push([...layers]);
+        redoStack = [];
+      }
+
+      function updateLayers() {
+        const list = document.getElementById("layersList");
+        list.innerHTML = "";
+        layers.forEach((l, i) => {
+          const d = document.createElement("div");
+          d.style.borderBottom = "1px solid #444";
+          d.style.padding = "5px";
+          d.innerHTML = `
+            Layer ${i}<br>
+            <button onclick="downloadLayer(${i})">Export</button>
+            <button onclick="deleteLayer(${i})">Delete</button>
+          `;
+          list.appendChild(d);
+        });
+      }
+
+      window.deleteLayer = (i) => {
+        app.stage.removeChild(layers[i].sprite);
+        layers.splice(i, 1);
+        updateLayers();
+        saveHistory();
+      };
+
+      window.downloadLayer = async (i) => {
+        const url = await app.renderer.extract.base64(layers[i].texture);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `layer-${i}.png`;
+        a.click();
+      };
+
+      document.getElementById("save").onclick = async () => {
+        const url = await app.renderer.extract.base64(app.stage);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "final-art.png";
+        a.click();
+      };
+    </script>
+  </body>
+</html>
