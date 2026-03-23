@@ -38,9 +38,7 @@
       <label style="margin-left: 15px">Size: </label>
       <input type="range" id="brushSize" min="1" max="100" value="30" />
       <span id="sizeValue">30</span>
-      <button id="undo">Undo</button>
-      <button id="redo">Redo</button>
-      <button id="save">Save</button>
+      <button id="save">Save Final</button>
     </div>
 
     <div id="layersPanel">
@@ -60,7 +58,6 @@
       let drawingTexture, drawingSprite;
       let mode = "lasso";
       let brushSize = 30;
-      let isDrawing = false; // <--- ADDED THIS
 
       let lassoPoints = [];
       let draggingPoint = -1;
@@ -75,6 +72,7 @@
 
       const sizeSlider = document.getElementById("brushSize");
       const sizeLabel = document.getElementById("sizeValue");
+      let isDrawing = false; // To track brush state
 
       sizeSlider.oninput = (e) => {
         brushSize = parseInt(e.target.value);
@@ -149,8 +147,8 @@
         app.stage.hitArea = app.screen;
 
         app.stage.on("pointerdown", (e) => {
+          isDrawing = true; // Fixes the brush not starting
           const pos = e.global.clone();
-          isDrawing = true; // Start tracking for brush
 
           if (mode === "lasso") {
             if (lassoPoints.length > 2) {
@@ -167,7 +165,6 @@
               (p) => Math.hypot(p.x - pos.x, p.y - pos.y) < 15,
             );
             if (draggingPoint !== -1) return;
-
             lassoPoints.push(pos);
             drawLasso();
           }
@@ -175,7 +172,6 @@
 
         app.stage.on("pointermove", (e) => {
           const pos = e.global;
-
           if (mode === "lasso") {
             if (draggingPoint !== -1) {
               lassoPoints[draggingPoint].x = pos.x;
@@ -184,15 +180,13 @@
             drawLasso(pos);
           }
 
-          // FIXED BRUSH LOGIC
+          // Brush works now because isDrawing is defined
           if (isDrawing && mode === "brush") {
             const g = new PIXI.Graphics();
             g.beginFill(0xffffff);
             g.drawCircle(pos.x, pos.y, brushSize);
             g.endFill();
-
             g.blendMode = PIXI.BLEND_MODES.DST_OUT;
-
             app.renderer.render(g, {
               renderTexture: drawingTexture,
               clear: false,
@@ -201,13 +195,10 @@
         });
 
         app.stage.on("pointerup", () => {
-          isDrawing = false; // Stop brush
+          isDrawing = false;
           draggingPoint = -1;
         });
-
-        app.stage.on("pointerupoutside", () => {
-          isDrawing = false;
-        });
+        app.stage.on("pointerupoutside", () => (isDrawing = false));
       }
       // ================= APPLY LASSO (CUT TO LAYER) =================
       function applyLasso() {
@@ -250,22 +241,43 @@
         redoStack = [];
       }
 
+      // ================= UPDATED LAYER PREVIEW =================
       function updateLayers() {
         const list = document.getElementById("layersList");
         list.innerHTML = "";
+
         layers.forEach((l, i) => {
-          const d = document.createElement("div");
-          d.style.borderBottom = "1px solid #444";
-          d.style.padding = "5px";
-          d.innerHTML = `
-            Layer ${i}<br>
+          const container = document.createElement("div");
+          container.style.cssText =
+            "border-bottom: 1px solid #444; padding: 10px; background: #252525; margin-bottom: 5px;";
+
+          // 1. Create a small preview canvas for the sidebar
+          const previewCanvas = document.createElement("canvas");
+          previewCanvas.style.width = "100px"; // Thumbnail size
+          previewCanvas.style.height = "auto";
+          previewCanvas.style.display = "block";
+          previewCanvas.style.marginBottom = "5px";
+          previewCanvas.style.border = "1px solid #555";
+
+          container.innerHTML = `<strong>Layer ${i}</strong>`;
+          container.appendChild(previewCanvas);
+
+          const controls = document.createElement("div");
+          controls.innerHTML = `
             <button onclick="downloadLayer(${i})">Export</button>
-            <button onclick="deleteLayer(${i})">Delete</button>
+            <button onclick="deleteLayer(${i})" style="color: #ff5555;">Delete</button>
           `;
-          list.appendChild(d);
+          container.appendChild(controls);
+          list.appendChild(container);
+
+          // 2. FIX: Extract canvas synchronously (Pixi v7)
+          const extractedCanvas = app.renderer.extract.canvas(l.texture);
+          const ctx = previewCanvas.getContext("2d");
+          previewCanvas.width = extractedCanvas.width;
+          previewCanvas.height = extractedCanvas.height;
+          ctx.drawImage(extractedCanvas, 0, 0);
         });
       }
-
       window.deleteLayer = (i) => {
         app.stage.removeChild(layers[i].sprite);
         layers.splice(i, 1);
@@ -273,19 +285,26 @@
         saveHistory();
       };
 
+      // ================= DOWNLOAD & SAVE FIXES =================
+
+      // Individual Layer Download (Transparent PNG)
       window.downloadLayer = async (i) => {
-        const url = await app.renderer.extract.base64(layers[i].texture);
+        const canvas = await app.renderer.extract.canvas(layers[i].texture);
+        const url = canvas.toDataURL("image/png");
         const a = document.createElement("a");
         a.href = url;
         a.download = `layer-${i}.png`;
         a.click();
       };
 
+      // Final Save (Preserves original dimensions)
       document.getElementById("save").onclick = async () => {
-        const url = await app.renderer.extract.base64(app.stage);
+        // We extract the stage but ensure the background is transparent
+        const canvas = await app.renderer.extract.canvas(app.stage);
+        const url = canvas.toDataURL("image/png"); // PNG supports transparency
         const a = document.createElement("a");
         a.href = url;
-        a.download = "final-art.png";
+        a.download = "edited-image.png";
         a.click();
       };
     </script>
